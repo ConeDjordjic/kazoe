@@ -1,5 +1,9 @@
 # kazoe
 
+[![Crates.io](https://img.shields.io/crates/v/kazoe)](https://crates.io/crates/kazoe)
+[![CI](https://github.com/ConeDjordjic/kazoe/actions/workflows/ci.yml/badge.svg)](https://github.com/ConeDjordjic/kazoe/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Fast `wc` replacement.
 
 Command: `kz`
