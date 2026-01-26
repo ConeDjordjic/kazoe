@@ -6,6 +6,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
+use encoding_rs::Encoding;
 use globset::{Glob, GlobSetBuilder};
 use memmap2::MmapOptions;
 use rayon::prelude::*;
@@ -14,9 +15,12 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::Path;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 use walkdir::WalkDir;
+
+const MAX_WALKDIR_DEPTH: usize = 100;
 
 #[derive(Serialize)]
 struct Counts {
@@ -160,9 +164,23 @@ impl Counts {
 fn process_data(data: &[u8], args: &config::Args) -> Counts {
     let mut counts = Counts::new();
 
+    let validated_encoding = args.encoding.as_deref().and_then(|name| {
+        if Encoding::for_label(name.as_bytes()).is_some() {
+            Some(name)
+        } else {
+            if args.verbose {
+                eprintln!(
+                    "kz: warning: unknown encoding '{}', falling back to auto-detection",
+                    name
+                );
+            }
+            None
+        }
+    });
+
     let decoded_data;
-    let data_after_encoding = if args.encoding.is_some() || !data.is_empty() {
-        decoded_data = count::decode_to_utf8(data, args.encoding.as_deref());
+    let data_after_encoding = if validated_encoding.is_some() || !data.is_empty() {
+        decoded_data = count::decode_to_utf8(data, validated_encoding);
         &decoded_data[..]
     } else {
         data
@@ -381,7 +399,10 @@ fn collect_files(args: &config::Args) -> io::Result<Vec<String>> {
                 ));
             }
 
-            for entry in WalkDir::new(path).follow_links(true) {
+            for entry in WalkDir::new(path)
+                .follow_links(true)
+                .max_depth(MAX_WALKDIR_DEPTH)
+            {
                 let entry = match entry {
                     Ok(e) => e,
                     Err(e) => {
@@ -431,7 +452,13 @@ fn main() {
         match process_stdin(&args) {
             Ok(result) => {
                 if args.json {
-                    println!("{}", serde_json::to_string_pretty(&result.counts).unwrap());
+                    match serde_json::to_string_pretty(&result.counts) {
+                        Ok(json) => println!("{}", json),
+                        Err(e) => {
+                            eprintln!("kz: JSON serialization error: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
                 } else if args.stats {
                     println!("{}", result.counts.format_stats());
                 } else if args.histogram {
@@ -496,6 +523,7 @@ fn main() {
     } else {
         let total_files = files.len();
         let processed = AtomicUsize::new(0);
+        let progress_lock = Mutex::new(());
         let results: Vec<_> = files
             .par_iter()
             .map(|path| {
@@ -507,11 +535,13 @@ fn main() {
                     } else {
                         path.clone()
                     };
-                    eprint!(
-                        "\r\x1b[Kprocessing: {}/{} {}",
-                        count, total_files, display_path
-                    );
-                    let _ = io::stderr().flush();
+                    if let Ok(_guard) = progress_lock.lock() {
+                        eprint!(
+                            "\r\x1b[Kprocessing: {}/{} {}",
+                            count, total_files, display_path
+                        );
+                        let _ = io::stderr().flush();
+                    }
                 }
                 result
             })
@@ -535,7 +565,11 @@ fn main() {
                 total.add(&file_result.counts);
             }
             Err(e) => {
-                if e.kind() != io::ErrorKind::NotFound {
+                if e.kind() == io::ErrorKind::NotFound {
+                    if args.verbose {
+                        eprintln!("kz: {}: {}", path, e);
+                    }
+                } else {
                     eprintln!("kz: {}: {}", path, e);
                     had_error = true;
                 }
@@ -574,17 +608,14 @@ fn main() {
             if let Ok(file_result) = result {
                 let mut json_obj = serde_json::Map::new();
                 json_obj.insert("file".to_string(), serde_json::Value::String(path.clone()));
-                json_obj.insert(
-                    "counts".to_string(),
-                    serde_json::to_value(&file_result.counts).unwrap(),
-                );
+                if let Ok(counts_value) = serde_json::to_value(&file_result.counts) {
+                    json_obj.insert("counts".to_string(), counts_value);
+                }
                 if let Some(duration) = file_result.duration {
-                    json_obj.insert(
-                        "duration_ms".to_string(),
-                        serde_json::Value::Number(
-                            serde_json::Number::from_f64(duration.as_secs_f64() * 1000.0).unwrap(),
-                        ),
-                    );
+                    let ms = duration.as_secs_f64() * 1000.0;
+                    if let Some(num) = serde_json::Number::from_f64(ms) {
+                        json_obj.insert("duration_ms".to_string(), serde_json::Value::Number(num));
+                    }
                 }
                 json_results.push(serde_json::Value::Object(json_obj));
             }
@@ -595,21 +626,24 @@ fn main() {
                 "file".to_string(),
                 serde_json::Value::String("total".to_string()),
             );
-            json_obj.insert("counts".to_string(), serde_json::to_value(&total).unwrap());
+            if let Ok(total_value) = serde_json::to_value(&total) {
+                json_obj.insert("counts".to_string(), total_value);
+            }
             if let Some(duration) = total_duration {
-                json_obj.insert(
-                    "duration_ms".to_string(),
-                    serde_json::Value::Number(
-                        serde_json::Number::from_f64(duration.as_secs_f64() * 1000.0).unwrap(),
-                    ),
-                );
+                let ms = duration.as_secs_f64() * 1000.0;
+                if let Some(num) = serde_json::Number::from_f64(ms) {
+                    json_obj.insert("duration_ms".to_string(), serde_json::Value::Number(num));
+                }
             }
             json_results.push(serde_json::Value::Object(json_obj));
         }
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::Value::Array(json_results)).unwrap()
-        );
+        match serde_json::to_string_pretty(&serde_json::Value::Array(json_results)) {
+            Ok(json) => println!("{}", json),
+            Err(e) => {
+                eprintln!("kz: JSON serialization error: {}", e);
+                std::process::exit(1);
+            }
+        }
     } else if show_total && !args.stats && !args.histogram {
         let mut output = total.format(&args, "total", &widths);
         if let Some(duration) = total_duration {

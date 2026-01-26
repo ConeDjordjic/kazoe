@@ -132,7 +132,6 @@ pub fn count_pattern(data: &[u8], pattern: &[u8]) -> usize {
 
     use rayon::prelude::*;
 
-    let overlap = pattern.len() - 1;
     let num_chunks = data.len().div_ceil(CHUNK_SIZE);
 
     let count: usize = (0..num_chunks)
@@ -145,17 +144,26 @@ pub fn count_pattern(data: &[u8], pattern: &[u8]) -> usize {
         })
         .sum();
 
-    let mut missed = 0;
+    let mut boundary_matches = 0;
     for i in 1..num_chunks {
-        let prev_chunk_end = i * CHUNK_SIZE;
-        let boundary_start = prev_chunk_end.saturating_sub(overlap);
-        let boundary_end = (prev_chunk_end + overlap).min(data.len());
+        let boundary = i * CHUNK_SIZE;
+        let search_start = boundary.saturating_sub(pattern.len() - 1);
+        let search_end = (boundary + pattern.len() - 1).min(data.len());
 
-        let boundary = &data[boundary_start..boundary_end];
-        missed += finder.find_iter(boundary).count();
+        if search_start >= search_end {
+            continue;
+        }
+
+        let region = &data[search_start..search_end];
+        for pos in finder.find_iter(region) {
+            let abs_start = search_start + pos;
+            if abs_start < boundary && abs_start + pattern.len() > boundary {
+                boundary_matches += 1;
+            }
+        }
     }
 
-    count + missed
+    count + boundary_matches
 }
 
 pub fn count_chars(data: &[u8]) -> usize {
@@ -241,13 +249,7 @@ fn max_line_length_sequential(data: &[u8]) -> usize {
 pub fn is_binary(data: &[u8]) -> bool {
     let sample_size = data.len().min(8192);
     let sample = &data[..sample_size];
-
-    for &byte in sample {
-        if byte == 0 || (byte < 32 && byte != b'\n' && byte != b'\r' && byte != b'\t') {
-            return true;
-        }
-    }
-    false
+    memchr::memchr(0, sample).is_some()
 }
 
 use std::collections::{HashMap, HashSet};
@@ -321,7 +323,7 @@ pub fn calculate_statistics(data: &[u8]) -> Statistics {
         }
     }
 
-    if current_len > 0 || !data.is_empty() {
+    if current_len > 0 || (!data.is_empty() && data.last() != Some(&b'\n')) {
         line_lengths.push(current_len);
         if current_len == 0 {
             empty_lines += 1;
@@ -409,53 +411,89 @@ pub fn filter_code_comments(data: &[u8]) -> Vec<u8> {
     let mut docstring_marker: &str = "";
 
     for line in text.lines() {
-        let trimmed = line.trim();
+        let mut current = line;
+        let mut line_output = String::new();
 
-        if in_multiline_c_comment {
-            if trimmed.contains("*/") {
-                in_multiline_c_comment = false;
+        while !current.is_empty() {
+            if in_multiline_c_comment {
+                if let Some(pos) = current.find("*/") {
+                    in_multiline_c_comment = false;
+                    current = &current[pos + 2..];
+                } else {
+                    break;
+                }
+            } else if in_python_docstring {
+                if let Some(pos) = current.find(docstring_marker) {
+                    in_python_docstring = false;
+                    current = &current[pos + docstring_marker.len()..];
+                } else {
+                    break;
+                }
+            } else {
+                let markers: [(Option<usize>, &str); 6] = [
+                    (current.find("//"), "single_slash"),
+                    (current.find('#'), "single_hash"),
+                    (current.find("--"), "single_dash"),
+                    (current.find("/*"), "multi"),
+                    (current.find("\"\"\""), "doc_double"),
+                    (current.find("'''"), "doc_single"),
+                ];
+
+                let earliest = markers
+                    .into_iter()
+                    .filter_map(|(pos, kind)| pos.map(|p| (p, kind)))
+                    .min_by_key(|(p, _)| *p);
+
+                if let Some((pos, marker_type)) = earliest {
+                    line_output.push_str(&current[..pos]);
+
+                    match marker_type {
+                        "single_slash" | "single_hash" | "single_dash" => {
+                            break;
+                        }
+                        "multi" => {
+                            let after = &current[pos + 2..];
+                            if let Some(end_pos) = after.find("*/") {
+                                current = &after[end_pos + 2..];
+                            } else {
+                                in_multiline_c_comment = true;
+                                break;
+                            }
+                        }
+                        "doc_double" => {
+                            let after = &current[pos + 3..];
+                            if let Some(end_pos) = after.find("\"\"\"") {
+                                current = &after[end_pos + 3..];
+                            } else {
+                                docstring_marker = "\"\"\"";
+                                in_python_docstring = true;
+                                break;
+                            }
+                        }
+                        "doc_single" => {
+                            let after = &current[pos + 3..];
+                            if let Some(end_pos) = after.find("'''") {
+                                current = &after[end_pos + 3..];
+                            } else {
+                                docstring_marker = "'''";
+                                in_python_docstring = true;
+                                break;
+                            }
+                        }
+                        _ => unreachable!(),
+                    }
+                } else {
+                    line_output.push_str(current);
+                    break;
+                }
             }
-            continue;
         }
 
-        if in_python_docstring {
-            if trimmed.ends_with(docstring_marker)
-                || (trimmed.contains(docstring_marker) && !trimmed.starts_with(docstring_marker))
-            {
-                in_python_docstring = false;
-            }
-            continue;
+        let trimmed = line_output.trim_end();
+        if !trimmed.trim_start().is_empty() {
+            result.extend_from_slice(trimmed.as_bytes());
+            result.push(b'\n');
         }
-
-        if trimmed.starts_with("/*") {
-            in_multiline_c_comment = true;
-            if trimmed.ends_with("*/") && trimmed.len() > 3 {
-                in_multiline_c_comment = false;
-            }
-            continue;
-        }
-
-        if let Some(rest) = trimmed.strip_prefix("\"\"\"") {
-            docstring_marker = "\"\"\"";
-            in_python_docstring = !rest.contains("\"\"\"");
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix("'''") {
-            docstring_marker = "'''";
-            in_python_docstring = !rest.contains("'''");
-            continue;
-        }
-
-        if trimmed.is_empty()
-            || trimmed.starts_with("//")
-            || trimmed.starts_with('#')
-            || trimmed.starts_with("--")
-        {
-            continue;
-        }
-
-        result.extend_from_slice(line.as_bytes());
-        result.push(b'\n');
     }
 
     result

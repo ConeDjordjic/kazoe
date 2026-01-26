@@ -2,7 +2,7 @@ use clap::Parser;
 use clap_complete::Shell;
 
 #[derive(Parser, Debug)]
-#[command(version, about = "Fast word, line, and byte counter", long_about = None)]
+#[command(version, about = "Fast wc replacement", long_about = None)]
 pub struct Args {
     #[arg(help = "Files to process (reads from stdin if not provided)")]
     pub files: Vec<String>,
