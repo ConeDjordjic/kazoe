@@ -1,6 +1,6 @@
 [package]
 name = "kazoe"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 authors = ["ConeDjordjic"]
 description = "Fast wc replacement"
@@ -10,7 +10,7 @@ keywords = ["wc", "word-count", "cli", "parallel", "fast"]
 categories = ["command-line-utilities", "text-processing"]
 repository = "https://github.com/ConeDjordjic/kazoe"
 homepage = "https://github.com/ConeDjordjic/kazoe"
-exclude = ["*.txt", "testing.sh"]
+exclude = ["*.txt", "test.sh"]
 
 [[bin]]
 name = "kz"

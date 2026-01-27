@@ -29,6 +29,7 @@ struct Counts {
     bytes: usize,
     chars: usize,
     max_line_length: usize,
+    blank_lines: usize,
     pattern: usize,
     unique_words: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -55,6 +56,7 @@ impl Counts {
             bytes: 0,
             chars: 0,
             max_line_length: 0,
+            blank_lines: 0,
             pattern: 0,
             unique_words: 0,
             statistics: None,
@@ -68,6 +70,7 @@ impl Counts {
         self.bytes += other.bytes;
         self.chars += other.chars;
         self.max_line_length = self.max_line_length.max(other.max_line_length);
+        self.blank_lines += other.blank_lines;
         self.pattern += other.pattern;
         self.unique_words += other.unique_words;
     }
@@ -88,6 +91,9 @@ impl Counts {
         }
         if args.max_line_length {
             values.push(self.max_line_length);
+        }
+        if args.blank_lines {
+            values.push(self.blank_lines);
         }
         if args.unique {
             values.push(self.unique_words);
@@ -164,22 +170,29 @@ impl Counts {
 fn process_data(data: &[u8], args: &config::Args) -> Counts {
     let mut counts = Counts::new();
 
-    let validated_encoding = args.encoding.as_deref().and_then(|name| {
-        if Encoding::for_label(name.as_bytes()).is_some() {
-            Some(name)
-        } else {
-            if args.verbose {
-                eprintln!(
-                    "kz: warning: unknown encoding '{}', falling back to auto-detection",
-                    name
-                );
-            }
-            None
-        }
-    });
+    let needs_decoding = args.encoding.is_some()
+        || args.words
+        || args.chars
+        || args.unique
+        || args.stats
+        || args.code
+        || args.markdown;
 
     let decoded_data;
-    let data_after_encoding = if validated_encoding.is_some() || !data.is_empty() {
+    let data_after_encoding = if needs_decoding {
+        let validated_encoding = args.encoding.as_deref().and_then(|name| {
+            if Encoding::for_label(name.as_bytes()).is_some() {
+                Some(name)
+            } else {
+                if args.verbose {
+                    eprintln!(
+                        "kz: warning: unknown encoding '{}', falling back to auto-detection",
+                        name
+                    );
+                }
+                None
+            }
+        });
         decoded_data = count::decode_to_utf8(data, validated_encoding);
         &decoded_data[..]
     } else {
@@ -197,10 +210,10 @@ fn process_data(data: &[u8], args: &config::Args) -> Counts {
         data_after_encoding
     };
 
-    if args.lines {
+    if args.lines || args.stats {
         counts.lines = count::count_lines(data_to_process);
     }
-    if args.words {
+    if args.words || args.stats {
         counts.words = count::count_all_words(data_to_process);
     }
     if args.chars {
@@ -210,11 +223,14 @@ fn process_data(data: &[u8], args: &config::Args) -> Counts {
             counts.chars = count::count_chars(data_to_process);
         }
     }
-    if args.bytes {
+    if args.bytes || args.stats {
         counts.bytes = data_to_process.len();
     }
     if args.max_line_length {
         counts.max_line_length = count::max_line_length(data_to_process);
+    }
+    if args.blank_lines {
+        counts.blank_lines = count::count_blank_lines(data_to_process);
     }
     if args.unique {
         counts.unique_words = count::count_unique_words(data_to_process);
@@ -257,6 +273,7 @@ fn process_file(path: &str, args: &config::Args) -> io::Result<FileResult> {
         && !args.words
         && !args.chars
         && !args.max_line_length
+        && !args.blank_lines
         && !args.unique
         && args.pattern.is_none()
         && !args.stats
@@ -286,7 +303,9 @@ fn process_file(path: &str, args: &config::Args) -> io::Result<FileResult> {
         });
     }
 
-    let counts = if metadata.is_file() {
+    const MMAP_THRESHOLD: usize = 128 * 1024;
+
+    let counts = if file_size >= MMAP_THRESHOLD && metadata.is_file() {
         let mmap = unsafe { MmapOptions::new().map(&file)? };
 
         if count::is_binary(&mmap) {
@@ -299,7 +318,7 @@ fn process_file(path: &str, args: &config::Args) -> io::Result<FileResult> {
 
         process_data(&mmap, args)
     } else {
-        let mut buffer = Vec::new();
+        let mut buffer = Vec::with_capacity(file_size);
         let mut file = file;
         file.read_to_end(&mut buffer)?;
 
@@ -452,7 +471,22 @@ fn main() {
         match process_stdin(&args) {
             Ok(result) => {
                 if args.json {
-                    match serde_json::to_string_pretty(&result.counts) {
+                    let mut json_obj = serde_json::Map::new();
+                    if let Ok(counts_value) = serde_json::to_value(&result.counts)
+                        && let Some(obj) = counts_value.as_object()
+                    {
+                        for (k, v) in obj {
+                            json_obj.insert(k.clone(), v.clone());
+                        }
+                    }
+                    if let Some(duration) = result.duration {
+                        let ms = duration.as_secs_f64() * 1000.0;
+                        if let Some(num) = serde_json::Number::from_f64(ms) {
+                            json_obj
+                                .insert("duration_ms".to_string(), serde_json::Value::Number(num));
+                        }
+                    }
+                    match serde_json::to_string_pretty(&serde_json::Value::Object(json_obj)) {
                         Ok(json) => println!("{}", json),
                         Err(e) => {
                             eprintln!("kz: JSON serialization error: {}", e);
@@ -460,7 +494,14 @@ fn main() {
                         }
                     }
                 } else if args.stats {
-                    println!("{}", result.counts.format_stats());
+                    let mut output = result.counts.format_stats();
+                    if let Some(duration) = result.duration {
+                        output.push_str(&format!(
+                            "\n  Duration: {:.3}ms",
+                            duration.as_secs_f64() * 1000.0
+                        ));
+                    }
+                    println!("{}", output);
                 } else if args.histogram {
                     println!("{}", result.counts.format_histogram());
                 } else {
@@ -583,44 +624,56 @@ fn main() {
         .map(|v| v.to_string().len().max(1))
         .collect();
 
-    for (path, result) in &file_results {
-        if let Ok(file_result) = result {
-            if args.json {
-                continue;
-            } else if args.stats {
-                println!("\n{}", path);
-                println!("{}", file_result.counts.format_stats());
-            } else if args.histogram {
-                println!("\n{}", path);
-                println!("{}", file_result.counts.format_histogram());
-            } else {
-                let mut output = file_result.counts.format(&args, path, &widths);
-                if let Some(duration) = file_result.duration {
-                    output.push_str(&format!(" ({:.3}ms)", duration.as_secs_f64() * 1000.0));
+    if !args.total_only {
+        for (path, result) in &file_results {
+            if let Ok(file_result) = result {
+                if args.json {
+                    continue;
+                } else if args.stats {
+                    println!("\n{}", path);
+                    let mut output = file_result.counts.format_stats();
+                    if let Some(duration) = file_result.duration {
+                        output.push_str(&format!(
+                            "\n  Duration: {:.3}ms",
+                            duration.as_secs_f64() * 1000.0
+                        ));
+                    }
+                    println!("{}", output);
+                } else if args.histogram {
+                    println!("\n{}", path);
+                    println!("{}", file_result.counts.format_histogram());
+                } else {
+                    let mut output = file_result.counts.format(&args, path, &widths);
+                    if let Some(duration) = file_result.duration {
+                        output.push_str(&format!(" ({:.3}ms)", duration.as_secs_f64() * 1000.0));
+                    }
+                    println!("{}", output);
                 }
-                println!("{}", output);
             }
         }
     }
 
     if args.json {
-        for (path, result) in &file_results {
-            if let Ok(file_result) = result {
-                let mut json_obj = serde_json::Map::new();
-                json_obj.insert("file".to_string(), serde_json::Value::String(path.clone()));
-                if let Ok(counts_value) = serde_json::to_value(&file_result.counts) {
-                    json_obj.insert("counts".to_string(), counts_value);
-                }
-                if let Some(duration) = file_result.duration {
-                    let ms = duration.as_secs_f64() * 1000.0;
-                    if let Some(num) = serde_json::Number::from_f64(ms) {
-                        json_obj.insert("duration_ms".to_string(), serde_json::Value::Number(num));
+        if !args.total_only {
+            for (path, result) in &file_results {
+                if let Ok(file_result) = result {
+                    let mut json_obj = serde_json::Map::new();
+                    json_obj.insert("file".to_string(), serde_json::Value::String(path.clone()));
+                    if let Ok(counts_value) = serde_json::to_value(&file_result.counts) {
+                        json_obj.insert("counts".to_string(), counts_value);
                     }
+                    if let Some(duration) = file_result.duration {
+                        let ms = duration.as_secs_f64() * 1000.0;
+                        if let Some(num) = serde_json::Number::from_f64(ms) {
+                            json_obj
+                                .insert("duration_ms".to_string(), serde_json::Value::Number(num));
+                        }
+                    }
+                    json_results.push(serde_json::Value::Object(json_obj));
                 }
-                json_results.push(serde_json::Value::Object(json_obj));
             }
         }
-        if show_total {
+        if show_total || args.total_only {
             let mut json_obj = serde_json::Map::new();
             json_obj.insert(
                 "file".to_string(),
@@ -644,7 +697,7 @@ fn main() {
                 std::process::exit(1);
             }
         }
-    } else if show_total && !args.stats && !args.histogram {
+    } else if (show_total || args.total_only) && !args.stats && !args.histogram {
         let mut output = total.format(&args, "total", &widths);
         if let Some(duration) = total_duration {
             output.push_str(&format!(" ({:.3}ms)", duration.as_secs_f64() * 1000.0));

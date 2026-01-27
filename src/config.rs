@@ -86,6 +86,12 @@ pub struct Args {
     #[arg(long = "timing", help = "Show processing time for each file")]
     pub timing: bool,
 
+    #[arg(short = 'b', long = "blank-lines", help = "Print blank line counts")]
+    pub blank_lines: bool,
+
+    #[arg(long = "total-only", help = "Only show total, skip per-file output")]
+    pub total_only: bool,
+
     #[arg(
         long = "encoding",
         value_name = "ENCODING",
@@ -108,6 +114,7 @@ impl Args {
             && !self.stats
             && !self.unique
             && !self.histogram
+            && !self.blank_lines
         {
             self.lines = true;
             self.bytes = true;

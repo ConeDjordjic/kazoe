@@ -1,4 +1,7 @@
 use memchr::memmem::Finder;
+use rayon::prelude::*;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 
 const CHUNK_SIZE: usize = 1024 * 1024;
 const PARALLEL_THRESHOLD: usize = 512 * 1024;
@@ -8,10 +11,67 @@ pub fn count_lines(data: &[u8]) -> usize {
         return memchr::memchr_iter(b'\n', data).count();
     }
 
-    use rayon::prelude::*;
     data.par_chunks(CHUNK_SIZE)
         .map(|chunk| memchr::memchr_iter(b'\n', chunk).count())
         .sum()
+}
+
+pub fn count_blank_lines(data: &[u8]) -> usize {
+    if data.is_empty() {
+        return 0;
+    }
+
+    if data.len() < PARALLEL_THRESHOLD {
+        return count_blank_lines_chunk(data);
+    }
+
+    let boundaries = find_line_boundaries(data, CHUNK_SIZE);
+    boundaries
+        .par_windows(2)
+        .map(|w| count_blank_lines_chunk(&data[w[0]..w[1]]))
+        .sum()
+}
+
+fn count_blank_lines_chunk(data: &[u8]) -> usize {
+    let mut count = 0;
+    let mut line_start = 0;
+
+    for pos in memchr::memchr_iter(b'\n', data) {
+        if data[line_start..pos]
+            .iter()
+            .all(|&b| b.is_ascii_whitespace())
+        {
+            count += 1;
+        }
+        line_start = pos + 1;
+    }
+
+    if line_start < data.len() && data[line_start..].iter().all(|&b| b.is_ascii_whitespace()) {
+        count += 1;
+    }
+
+    count
+}
+
+fn find_line_boundaries(data: &[u8], chunk_size: usize) -> Vec<usize> {
+    let mut boundaries = vec![0];
+    let mut pos = chunk_size;
+
+    while pos < data.len() {
+        if let Some(nl) = memchr::memchr(b'\n', &data[pos..]) {
+            pos += nl + 1;
+        } else {
+            pos = data.len();
+        }
+        boundaries.push(pos);
+        pos += chunk_size;
+    }
+
+    if *boundaries.last().unwrap() != data.len() {
+        boundaries.push(data.len());
+    }
+
+    boundaries
 }
 
 pub fn count_all_words(data: &[u8]) -> usize {
@@ -23,10 +83,7 @@ pub fn count_all_words(data: &[u8]) -> usize {
         return count_words_in_chunk(data);
     }
 
-    use rayon::prelude::*;
-
     let chunk_boundaries = find_utf8_chunk_boundaries(data, CHUNK_SIZE);
-
     let count: usize = chunk_boundaries
         .par_windows(2)
         .map(|window| {
@@ -41,7 +98,7 @@ pub fn count_all_words(data: &[u8]) -> usize {
         if boundary > 0 && boundary < data.len() {
             let prev_byte = data[boundary - 1];
             let curr_byte = data[boundary];
-            if !is_whitespace_byte(prev_byte) && !is_whitespace_byte(curr_byte) {
+            if !prev_byte.is_ascii_whitespace() && !curr_byte.is_ascii_whitespace() {
                 overcounted += 1;
             }
         }
@@ -60,7 +117,10 @@ fn find_utf8_chunk_boundaries(data: &[u8], chunk_size: usize) -> Vec<usize> {
         pos += chunk_size;
     }
 
-    boundaries.push(data.len());
+    if *boundaries.last().unwrap() != data.len() {
+        boundaries.push(data.len());
+    }
+
     boundaries
 }
 
@@ -77,23 +137,13 @@ fn find_utf8_boundary(data: &[u8], pos: usize) -> usize {
 }
 
 #[inline]
-fn is_whitespace_byte(byte: u8) -> bool {
-    byte.is_ascii_whitespace()
-}
-
-#[inline]
-fn is_unicode_whitespace(c: char) -> bool {
-    c.is_whitespace()
-}
-
-#[inline]
 fn count_words_in_chunk(chunk: &[u8]) -> usize {
     if let Ok(text) = std::str::from_utf8(chunk) {
         let mut count = 0;
         let mut in_word = false;
 
         for c in text.chars() {
-            if is_unicode_whitespace(c) {
+            if c.is_whitespace() {
                 in_word = false;
             } else if !in_word {
                 count += 1;
@@ -130,10 +180,7 @@ pub fn count_pattern(data: &[u8], pattern: &[u8]) -> usize {
         return finder.find_iter(data).count();
     }
 
-    use rayon::prelude::*;
-
     let num_chunks = data.len().div_ceil(CHUNK_SIZE);
-
     let count: usize = (0..num_chunks)
         .into_par_iter()
         .map(|i| {
@@ -177,10 +224,7 @@ pub fn count_chars(data: &[u8]) -> usize {
             .unwrap_or(data.len());
     }
 
-    use rayon::prelude::*;
-
     let chunk_boundaries = find_utf8_chunk_boundaries(data, CHUNK_SIZE);
-
     chunk_boundaries
         .par_windows(2)
         .map(|window| {
@@ -198,52 +242,39 @@ pub fn max_line_length(data: &[u8]) -> usize {
     }
 
     if data.len() < PARALLEL_THRESHOLD {
-        return max_line_length_sequential(data);
+        return max_line_length_chunk(data);
     }
 
-    let mut line_start = 0;
+    let boundaries = find_line_boundaries(data, CHUNK_SIZE);
+    boundaries
+        .par_windows(2)
+        .map(|w| max_line_length_chunk(&data[w[0]..w[1]]))
+        .max()
+        .unwrap_or(0)
+}
+
+fn max_line_length_chunk(data: &[u8]) -> usize {
     let mut max_len = 0;
+    let mut prev = 0;
 
-    for (i, &byte) in data.iter().enumerate() {
-        if byte == b'\n' {
-            let mut line_end = i;
-            if line_end > line_start && data[line_end - 1] == b'\r' {
-                line_end -= 1;
-            }
-            let line_len = line_end - line_start;
-            max_len = max_len.max(line_len);
-            line_start = i + 1;
+    for pos in memchr::memchr_iter(b'\n', data) {
+        let mut end = pos;
+        if end > prev && data[end - 1] == b'\r' {
+            end -= 1;
         }
+        max_len = max_len.max(end - prev);
+        prev = pos + 1;
     }
 
-    if line_start < data.len() {
-        let mut line_end = data.len();
-        if line_end > line_start && data[line_end - 1] == b'\r' {
-            line_end -= 1;
+    if prev < data.len() {
+        let mut end = data.len();
+        if end > prev && data[end - 1] == b'\r' {
+            end -= 1;
         }
-        let line_len = line_end - line_start;
-        max_len = max_len.max(line_len);
+        max_len = max_len.max(end - prev);
     }
 
     max_len
-}
-
-#[inline]
-fn max_line_length_sequential(data: &[u8]) -> usize {
-    let mut max_len = 0;
-    let mut current_len = 0;
-
-    for &byte in data {
-        if byte == b'\n' {
-            max_len = max_len.max(current_len);
-            current_len = 0;
-        } else if byte == b'\r' {
-        } else {
-            current_len += 1;
-        }
-    }
-
-    max_len.max(current_len)
 }
 
 pub fn is_binary(data: &[u8]) -> bool {
@@ -251,8 +282,6 @@ pub fn is_binary(data: &[u8]) -> bool {
     let sample = &data[..sample_size];
     memchr::memchr(0, sample).is_some()
 }
-
-use std::collections::{HashMap, HashSet};
 
 pub fn count_unique_words(data: &[u8]) -> usize {
     let text = match std::str::from_utf8(data) {
@@ -267,8 +296,6 @@ pub fn count_unique_words(data: &[u8]) -> usize {
             .collect();
         return words.len();
     }
-
-    use rayon::prelude::*;
 
     let lines: Vec<&str> = text.lines().collect();
     let chunk_size = (lines.len() / rayon::current_num_threads()).max(1000);
@@ -306,29 +333,27 @@ pub struct Statistics {
 }
 
 pub fn calculate_statistics(data: &[u8]) -> Statistics {
-    let mut line_lengths = Vec::new();
-    let mut current_len = 0;
-    let mut empty_lines = 0;
-
-    for &byte in data {
-        if byte == b'\n' {
-            line_lengths.push(current_len);
-            if current_len == 0 {
-                empty_lines += 1;
-            }
-            current_len = 0;
-        } else if byte == b'\r' {
-        } else {
-            current_len += 1;
-        }
+    if data.is_empty() {
+        return Statistics {
+            mean_line_length: 0.0,
+            median_line_length: 0,
+            std_dev: 0.0,
+            min_line_length: 0,
+            max_line_length: 0,
+            empty_lines: 0,
+        };
     }
 
-    if current_len > 0 || (!data.is_empty() && data.last() != Some(&b'\n')) {
-        line_lengths.push(current_len);
-        if current_len == 0 {
-            empty_lines += 1;
-        }
-    }
+    let line_lengths = if data.len() < PARALLEL_THRESHOLD {
+        collect_line_lengths_chunk(data)
+    } else {
+        let boundaries = find_line_boundaries(data, CHUNK_SIZE);
+
+        boundaries
+            .par_windows(2)
+            .flat_map(|w| collect_line_lengths_chunk(&data[w[0]..w[1]]))
+            .collect()
+    };
 
     if line_lengths.is_empty() {
         return Statistics {
@@ -341,62 +366,142 @@ pub fn calculate_statistics(data: &[u8]) -> Statistics {
         };
     }
 
+    let empty_lines = line_lengths.iter().filter(|&&l| l == 0).count();
     let sum: usize = line_lengths.iter().sum();
     let mean = sum as f64 / line_lengths.len() as f64;
 
-    let variance: f64 = line_lengths
-        .iter()
-        .map(|&len| {
-            let diff = len as f64 - mean;
-            diff * diff
-        })
-        .sum::<f64>()
-        / line_lengths.len() as f64;
+    let variance: f64 = if data.len() < PARALLEL_THRESHOLD {
+        line_lengths
+            .iter()
+            .map(|&len| {
+                let diff = len as f64 - mean;
+                diff * diff
+            })
+            .sum::<f64>()
+    } else {
+        line_lengths
+            .par_iter()
+            .map(|&len| {
+                let diff = len as f64 - mean;
+                diff * diff
+            })
+            .sum::<f64>()
+    } / line_lengths.len() as f64;
 
     let std_dev = variance.sqrt();
 
-    line_lengths.sort_unstable();
-    let median = if line_lengths.len() % 2 == 0 {
-        let mid = line_lengths.len() / 2;
-        (line_lengths[mid - 1] + line_lengths[mid]) / 2
-    } else {
-        line_lengths[line_lengths.len() / 2]
-    };
+    let mut sorted = line_lengths;
+    sorted.sort_unstable();
 
-    let min = *line_lengths.iter().min().unwrap_or(&0);
-    let max = *line_lengths.iter().max().unwrap_or(&0);
+    let median = if sorted.len() % 2 == 0 {
+        let mid = sorted.len() / 2;
+        (sorted[mid - 1] + sorted[mid]) / 2
+    } else {
+        sorted[sorted.len() / 2]
+    };
 
     Statistics {
         mean_line_length: mean,
         median_line_length: median,
         std_dev,
-        min_line_length: min,
-        max_line_length: max,
+        min_line_length: sorted[0],
+        max_line_length: sorted[sorted.len() - 1],
         empty_lines,
     }
 }
 
-pub fn generate_histogram(data: &[u8]) -> HashMap<usize, usize> {
-    let mut histogram = HashMap::new();
-    let mut current_len = 0;
+fn collect_line_lengths_chunk(data: &[u8]) -> Vec<usize> {
+    let mut lengths = Vec::new();
+    let mut prev = 0;
 
-    for &byte in data {
-        if byte == b'\n' {
-            let bucket = (current_len / 10) * 10;
-            *histogram.entry(bucket).or_insert(0) += 1;
-            current_len = 0;
-        } else if byte == b'\r' {
-        } else {
-            current_len += 1;
+    for pos in memchr::memchr_iter(b'\n', data) {
+        let mut end = pos;
+        if end > prev && data[end - 1] == b'\r' {
+            end -= 1;
+        }
+        lengths.push(end - prev);
+        prev = pos + 1;
+    }
+
+    if prev < data.len() || (!data.is_empty() && data.last() != Some(&b'\n')) {
+        let mut end = data.len();
+        if end > prev && data[end - 1] == b'\r' {
+            end -= 1;
+        }
+        lengths.push(end - prev);
+    }
+
+    lengths
+}
+
+pub fn generate_histogram(data: &[u8]) -> HashMap<usize, usize> {
+    if data.is_empty() {
+        return HashMap::new();
+    }
+
+    if data.len() < PARALLEL_THRESHOLD {
+        return generate_histogram_chunk(data);
+    }
+
+    let boundaries = find_line_boundaries(data, CHUNK_SIZE);
+
+    let maps: Vec<HashMap<usize, usize>> = boundaries
+        .par_windows(2)
+        .map(|w| generate_histogram_chunk(&data[w[0]..w[1]]))
+        .collect();
+
+    let mut histogram = HashMap::new();
+    for map in maps {
+        for (bucket, count) in map {
+            *histogram.entry(bucket).or_insert(0) += count;
         }
     }
 
-    if current_len > 0 {
-        let bucket = (current_len / 10) * 10;
+    histogram
+}
+
+fn generate_histogram_chunk(data: &[u8]) -> HashMap<usize, usize> {
+    let mut histogram = HashMap::new();
+    let mut prev = 0;
+
+    for pos in memchr::memchr_iter(b'\n', data) {
+        let mut end = pos;
+        if end > prev && data[end - 1] == b'\r' {
+            end -= 1;
+        }
+        let bucket = ((end - prev) / 10) * 10;
+        *histogram.entry(bucket).or_insert(0) += 1;
+        prev = pos + 1;
+    }
+
+    if prev < data.len() || (!data.is_empty() && data.last() != Some(&b'\n')) {
+        let mut end = data.len();
+        if end > prev && data[end - 1] == b'\r' {
+            end -= 1;
+        }
+        let bucket = ((end - prev) / 10) * 10;
         *histogram.entry(bucket).or_insert(0) += 1;
     }
 
     histogram
+}
+
+fn find_comment_marker(s: &str, marker: &str, require_whitespace_before: bool) -> Option<usize> {
+    let mut start = 0;
+    while let Some(pos) = s[start..].find(marker) {
+        let abs_pos = start + pos;
+        if !require_whitespace_before
+            || abs_pos == 0
+            || s[..abs_pos]
+                .chars()
+                .last()
+                .is_none_or(|c| c.is_whitespace())
+        {
+            return Some(abs_pos);
+        }
+        start = abs_pos + 1;
+    }
+    None
 }
 
 pub fn filter_code_comments(data: &[u8]) -> Vec<u8> {
@@ -431,10 +536,10 @@ pub fn filter_code_comments(data: &[u8]) -> Vec<u8> {
                 }
             } else {
                 let markers: [(Option<usize>, &str); 6] = [
-                    (current.find("//"), "single_slash"),
-                    (current.find('#'), "single_hash"),
-                    (current.find("--"), "single_dash"),
-                    (current.find("/*"), "multi"),
+                    (find_comment_marker(current, "//", true), "single_slash"),
+                    (find_comment_marker(current, "#", true), "single_hash"),
+                    (find_comment_marker(current, "--", true), "single_dash"),
+                    (find_comment_marker(current, "/*", true), "multi"),
                     (current.find("\"\"\""), "doc_double"),
                     (current.find("'''"), "doc_single"),
                 ];
@@ -543,7 +648,7 @@ fn filter_inline_code(line: &str) -> String {
     result
 }
 
-pub fn decode_to_utf8(data: &[u8], encoding_name: Option<&str>) -> Vec<u8> {
+pub fn decode_to_utf8<'a>(data: &'a [u8], encoding_name: Option<&str>) -> Cow<'a, [u8]> {
     use chardetng::EncodingDetector;
     use encoding_rs::Encoding;
 
@@ -556,11 +661,11 @@ pub fn decode_to_utf8(data: &[u8], encoding_name: Option<&str>) -> Vec<u8> {
     };
 
     if encoding == encoding_rs::UTF_8 {
-        return data.to_vec();
+        return Cow::Borrowed(data);
     }
 
     let (decoded, _, _) = encoding.decode(data);
-    decoded.into_owned().into_bytes()
+    Cow::Owned(decoded.into_owned().into_bytes())
 }
 
 #[cfg(test)]
@@ -796,6 +901,21 @@ mod tests {
         let input = b"int x = 5;\n\nint y = 10;\n";
         let output = filter_code_comments(input);
         assert_eq!(output, b"int x = 5;\nint y = 10;\n");
+    }
+
+    #[test]
+    fn test_filter_code_preserves_urls_and_colors() {
+        let input = b"url = \"https://example.com#anchor\"\ncolor = \"#fff\"\n";
+        let output = filter_code_comments(input);
+        assert!(String::from_utf8_lossy(&output).contains("#anchor"));
+        assert!(String::from_utf8_lossy(&output).contains("#fff"));
+    }
+
+    #[test]
+    fn test_filter_code_preserves_sql_operators() {
+        let input = b"SELECT * FROM foo--bar WHERE x = 1\n";
+        let output = filter_code_comments(input);
+        assert!(String::from_utf8_lossy(&output).contains("foo--bar"));
     }
 
     #[test]
