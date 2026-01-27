@@ -59,6 +59,7 @@ kz --pattern "foo" file  # count pattern
 -c, --bytes              byte count
 -m, --chars              character count (UTF-8)
 -L, --max-line-length    longest line
+-b, --blank-lines        blank line count
 -r, --recursive          recurse directories
 -v, --verbose            show warnings
 --unique                 unique word count
@@ -67,6 +68,7 @@ kz --pattern "foo" file  # count pattern
 --histogram              line length distribution
 --json                   JSON output
 --timing                 show processing time
+--total-only             only show total (skip per-file output)
 --progress               show progress
 --fast                   skip UTF-8 validation
 --code                   skip comments (// /* # -- """)
@@ -100,6 +102,12 @@ kz --encoding iso-8859-1 legacy.txt
 
 # Progress for large operations
 kz --progress -r ~/projects/
+
+# Blank lines count
+kz -b src/*.rs
+
+# Total only (no per-file output)
+kz --total-only -r src/
 ```
 
 ## Shell Completions
