@@ -297,9 +297,9 @@ pub fn count_unique_words(data: &[u8]) -> usize {
         return words.len();
     }
 
-    let chunk_boundaries = find_utf8_chunk_boundaries(data, CHUNK_SIZE);
+    let boundaries = find_line_boundaries(data, CHUNK_SIZE);
 
-    let local_sets: Vec<HashSet<&str>> = chunk_boundaries
+    let local_sets: Vec<HashSet<&str>> = boundaries
         .par_windows(2)
         .map(|window| {
             let chunk = &data[window[0]..window[1]];

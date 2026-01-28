@@ -19,11 +19,7 @@ mod basic_counting {
         let file = dir.path().join("test.txt");
         fs::write(&file, "line1\nline2\nline3\n").unwrap();
 
-        let output = kz_cmd()
-            .arg("-l")
-            .arg(&file)
-            .output()
-            .unwrap();
+        let output = kz_cmd().arg("-l").arg(&file).output().unwrap();
 
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -36,11 +32,7 @@ mod basic_counting {
         let file = dir.path().join("test.txt");
         fs::write(&file, "hello world foo bar\n").unwrap();
 
-        let output = kz_cmd()
-            .arg("-w")
-            .arg(&file)
-            .output()
-            .unwrap();
+        let output = kz_cmd().arg("-w").arg(&file).output().unwrap();
 
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -53,11 +45,7 @@ mod basic_counting {
         let file = dir.path().join("test.txt");
         fs::write(&file, "hello").unwrap();
 
-        let output = kz_cmd()
-            .arg("-c")
-            .arg(&file)
-            .output()
-            .unwrap();
+        let output = kz_cmd().arg("-c").arg(&file).output().unwrap();
 
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -70,11 +58,7 @@ mod basic_counting {
         let file = dir.path().join("test.txt");
         fs::write(&file, "hello 世界").unwrap();
 
-        let output = kz_cmd()
-            .arg("-m")
-            .arg(&file)
-            .output()
-            .unwrap();
+        let output = kz_cmd().arg("-m").arg(&file).output().unwrap();
 
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -87,10 +71,7 @@ mod basic_counting {
         let file = dir.path().join("test.txt");
         fs::write(&file, "hello world\nfoo bar\n").unwrap();
 
-        let output = kz_cmd()
-            .arg(&file)
-            .output()
-            .unwrap();
+        let output = kz_cmd().arg(&file).output().unwrap();
 
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -111,12 +92,7 @@ mod multi_file {
         fs::write(&file1, "line1\nline2\n").unwrap();
         fs::write(&file2, "line3\nline4\nline5\n").unwrap();
 
-        let output = kz_cmd()
-            .arg("-l")
-            .arg(&file1)
-            .arg(&file2)
-            .output()
-            .unwrap();
+        let output = kz_cmd().arg("-l").arg(&file1).arg(&file2).output().unwrap();
 
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -177,11 +153,7 @@ mod recursive {
     fn directory_without_recursive_flag_errors() {
         let dir = create_temp_dir();
 
-        let output = kz_cmd()
-            .arg("-l")
-            .arg(dir.path())
-            .output()
-            .unwrap();
+        let output = kz_cmd().arg("-l").arg(dir.path()).output().unwrap();
 
         assert!(!output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -219,11 +191,7 @@ mod json_output {
         let file = dir.path().join("test.txt");
         fs::write(&file, "hello world\n").unwrap();
 
-        let output = kz_cmd()
-            .arg("--json")
-            .arg(&file)
-            .output()
-            .unwrap();
+        let output = kz_cmd().arg("--json").arg(&file).output().unwrap();
 
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -293,11 +261,7 @@ mod special_cases {
         let file = dir.path().join("empty.txt");
         fs::write(&file, "").unwrap();
 
-        let output = kz_cmd()
-            .arg("-lwc")
-            .arg(&file)
-            .output()
-            .unwrap();
+        let output = kz_cmd().arg("-lwc").arg(&file).output().unwrap();
 
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -310,11 +274,7 @@ mod special_cases {
         let file = dir.path().join("test.txt");
         fs::write(&file, "no newline at end").unwrap();
 
-        let output = kz_cmd()
-            .arg("-l")
-            .arg(&file)
-            .output()
-            .unwrap();
+        let output = kz_cmd().arg("-l").arg(&file).output().unwrap();
 
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -327,11 +287,7 @@ mod special_cases {
         let file = dir.path().join("test.txt");
         fs::write(&file, "line1\r\nline2\r\n").unwrap();
 
-        let output = kz_cmd()
-            .arg("-L")
-            .arg(&file)
-            .output()
-            .unwrap();
+        let output = kz_cmd().arg("-L").arg(&file).output().unwrap();
 
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -340,10 +296,7 @@ mod special_cases {
 
     #[test]
     fn nonexistent_file_errors() {
-        let output = kz_cmd()
-            .arg("/nonexistent/path/file.txt")
-            .output()
-            .unwrap();
+        let output = kz_cmd().arg("/nonexistent/path/file.txt").output().unwrap();
 
         assert!(!output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -356,11 +309,7 @@ mod special_cases {
         let file = dir.path().join("test.txt");
         fs::write(&file, "line1\n\n  \nline2\n\t\n").unwrap();
 
-        let output = kz_cmd()
-            .arg("-b")
-            .arg(&file)
-            .output()
-            .unwrap();
+        let output = kz_cmd().arg("-b").arg(&file).output().unwrap();
 
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -373,11 +322,7 @@ mod special_cases {
         let file = dir.path().join("test.txt");
         fs::write(&file, "short\nthis is a longer line\nmed\n").unwrap();
 
-        let output = kz_cmd()
-            .arg("-L")
-            .arg(&file)
-            .output()
-            .unwrap();
+        let output = kz_cmd().arg("-L").arg(&file).output().unwrap();
 
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -434,11 +379,7 @@ mod unique_words {
         let file = dir.path().join("test.txt");
         fs::write(&file, "hello world hello foo world bar\n").unwrap();
 
-        let output = kz_cmd()
-            .arg("--unique")
-            .arg(&file)
-            .output()
-            .unwrap();
+        let output = kz_cmd().arg("--unique").arg(&file).output().unwrap();
 
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -452,11 +393,7 @@ mod unique_words {
         let content = "word1 word2 word3 word1 word2\n".repeat(50000);
         fs::write(&file, content).unwrap();
 
-        let output = kz_cmd()
-            .arg("--unique")
-            .arg(&file)
-            .output()
-            .unwrap();
+        let output = kz_cmd().arg("--unique").arg(&file).output().unwrap();
 
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
