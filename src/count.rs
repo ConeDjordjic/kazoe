@@ -297,18 +297,17 @@ pub fn count_unique_words(data: &[u8]) -> usize {
         return words.len();
     }
 
-    let lines: Vec<&str> = text.lines().collect();
-    let chunk_size = (lines.len() / rayon::current_num_threads()).max(1000);
+    let chunk_boundaries = find_utf8_chunk_boundaries(data, CHUNK_SIZE);
 
-    let local_sets: Vec<HashSet<&str>> = lines
-        .par_chunks(chunk_size)
-        .map(|chunk_lines| {
+    let local_sets: Vec<HashSet<&str>> = chunk_boundaries
+        .par_windows(2)
+        .map(|window| {
+            let chunk = &data[window[0]..window[1]];
+            let chunk_text = std::str::from_utf8(chunk).unwrap_or("");
             let mut local_set = HashSet::new();
-            for line in chunk_lines {
-                for word in line.split(|c: char| c.is_whitespace()) {
-                    if !word.is_empty() {
-                        local_set.insert(word);
-                    }
+            for word in chunk_text.split(|c: char| c.is_whitespace()) {
+                if !word.is_empty() {
+                    local_set.insert(word);
                 }
             }
             local_set
@@ -423,7 +422,7 @@ fn collect_line_lengths_chunk(data: &[u8]) -> Vec<usize> {
         prev = pos + 1;
     }
 
-    if prev < data.len() || (!data.is_empty() && data.last() != Some(&b'\n')) {
+    if prev < data.len() {
         let mut end = data.len();
         if end > prev && data[end - 1] == b'\r' {
             end -= 1;
@@ -474,7 +473,7 @@ fn generate_histogram_chunk(data: &[u8]) -> HashMap<usize, usize> {
         prev = pos + 1;
     }
 
-    if prev < data.len() || (!data.is_empty() && data.last() != Some(&b'\n')) {
+    if prev < data.len() {
         let mut end = data.len();
         if end > prev && data[end - 1] == b'\r' {
             end -= 1;
